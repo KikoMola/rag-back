@@ -36,7 +36,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.routers import chat, knowledge  # noqa: E402
+from app.routers import chat, dashboard, knowledge  # noqa: E402
 
+app.include_router(dashboard.router, prefix="/api/dashboard", tags=["Dashboard"])
 app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
 app.include_router(knowledge.router, prefix="/api/knowledge", tags=["Knowledge"])
