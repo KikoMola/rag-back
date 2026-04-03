@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     # --- Ollama ---
     ollama_base_url: str = "http://localhost:11434"
-    ollama_chat_model: str = "gemma3:27b"
+    ollama_chat_model: str = "gemma4:26b"
     ollama_embed_model: str = "mxbai-embed-large"
 
     # --- RAG ---

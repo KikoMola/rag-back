@@ -8,6 +8,7 @@ from app.database import async_session
 from app.models.document import Document
 from app.services import ollama_service
 from app.services.document_processor import chunk_text, extract_text
+from app.services.ollama_service import StreamToken
 from app.vectorstore import chroma_client
 
 logger = logging.getLogger(__name__)
@@ -121,7 +122,7 @@ async def query_knowledge(
     question: str,
     collection_ids: list[int] | None = None,
     top_k: int = 5,
-) -> AsyncGenerator[str, None]:
+) -> AsyncGenerator[StreamToken, None]:
     """
     Pipeline de consulta RAG:
     1. Convertir la pregunta en un embedding
@@ -166,8 +167,10 @@ async def query_knowledge(
     top_chunks = all_chunks[:top_k]
 
     if not top_chunks:
-        yield ("No he encontrado información relevante en la biblioteca "
-               "del conocimiento para responder a tu pregunta.")
+        yield StreamToken(type="content", token=(
+            "No he encontrado información relevante en la biblioteca "
+            "del conocimiento para responder a tu pregunta."
+        ))
         return
 
     # 5. Construir el contexto para el prompt
@@ -192,8 +195,8 @@ async def query_knowledge(
     ]
 
     # 7. Stream de la respuesta
-    async for token in ollama_service.chat_stream(messages):
-        yield token
+    async for stream_token in ollama_service.chat_stream(messages):
+        yield stream_token
 
 
 # ─── LIMPIEZA ────────────────────────────────────────────────────────

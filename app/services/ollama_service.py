@@ -1,6 +1,7 @@
 import json
 import logging
 from collections.abc import AsyncGenerator
+from typing import TypedDict
 
 import httpx
 from app.config import settings
@@ -9,11 +10,16 @@ logger = logging.getLogger(__name__)
 OLLAMA_API = settings.ollama_base_url
 
 
+class StreamToken(TypedDict):
+    type: str   # "thinking" | "content"
+    token: str
+
+
 async def chat_stream(
     messages: list[dict[str, str]],
     model: str | None = None,
-) -> AsyncGenerator[str, None]:
-    """Streaming de respuesta del LLM. Yield de cada token."""
+) -> AsyncGenerator[StreamToken, None]:
+    """Streaming de respuesta del LLM. Yield thinking y content tokens por separado."""
     model = model or settings.ollama_chat_model
     payload = {
         "model": model,
@@ -27,9 +33,16 @@ async def chat_stream(
                 if not line:
                     continue
                 chunk = json.loads(line)
-                token = chunk.get("message", {}).get("content", "")
-                if token:
-                    yield token
+                msg = chunk.get("message", {})
+
+                thinking = msg.get("thinking", "")
+                if thinking:
+                    yield StreamToken(type="thinking", token=thinking)
+
+                content = msg.get("content", "")
+                if content:
+                    yield StreamToken(type="content", token=content)
+
                 if chunk.get("done"):
                     break
 

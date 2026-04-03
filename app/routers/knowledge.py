@@ -224,12 +224,13 @@ async def query_knowledge(collection_id: int, body: KnowledgeQuery):
     """Hacer una pregunta sobre los documentos de una colección (SSE streaming)."""
     async def event_generator():
         try:
-            async for token in rag_service.query_knowledge(
+            async for stream_token in rag_service.query_knowledge(
                 question=body.question,
                 collection_ids=[collection_id],
                 top_k=body.top_k,
             ):
-                yield {"event": "token", "data": json.dumps({"token": token})}
+                event_type = "thinking" if stream_token["type"] == "thinking" else "token"
+                yield {"event": event_type, "data": json.dumps({"token": stream_token["token"]})}
             yield {"event": "done", "data": json.dumps({"status": "complete"})}
         except Exception as exc:
             yield {"event": "error", "data": json.dumps({"error": str(exc)})}

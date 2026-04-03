@@ -110,10 +110,15 @@ async def send_message(
     # 4. Streaming via SSE
     async def event_generator():
         full_response = ""
+        full_thinking = ""
         try:
-            async for token in ollama_service.chat_stream(ollama_messages):
-                full_response += token
-                yield {"event": "token", "data": json.dumps({"token": token})}
+            async for stream_token in ollama_service.chat_stream(ollama_messages):
+                if stream_token["type"] == "thinking":
+                    full_thinking += stream_token["token"]
+                    yield {"event": "thinking", "data": json.dumps({"token": stream_token["token"]})}
+                else:
+                    full_response += stream_token["token"]
+                    yield {"event": "token", "data": json.dumps({"token": stream_token["token"]})}
 
             # 5. Guardar respuesta del asistente
             async with _bg_session() as bg_session:
