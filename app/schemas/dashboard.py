@@ -27,6 +27,16 @@ class RecentCollectionActivity(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SearchCollectionResult(BaseModel):
+    id: int
+    name: str
+    description: str | None
+    document_count: int
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class DashboardResponse(BaseModel):
     stats: StatsResponse
     recent_documents: list[RecentDocumentActivity]
