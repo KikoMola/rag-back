@@ -9,6 +9,7 @@ from app.schemas.dashboard import (
     DashboardResponse,
     RecentCollectionActivity,
     RecentDocumentActivity,
+    SearchCollectionResult,
     StatsResponse,
 )
 from app.services import ollama_service
@@ -75,3 +76,31 @@ async def get_dashboard(session: AsyncSession = Depends(get_session)):
         recent_documents=recent_documents,
         recent_collections=recent_collections,
     )
+
+
+@router.get("/search", response_model=list[SearchCollectionResult])
+async def search_collections(
+    q: str = "",
+    session: AsyncSession = Depends(get_session),
+):
+    pattern = f"%{q}%"
+    result = await session.execute(
+        select(Collection, func.count(Document.id).label("doc_count"))
+        .outerjoin(Document)
+        .where(
+            Collection.name.ilike(pattern)
+            | Collection.description.ilike(pattern)
+        )
+        .group_by(Collection.id)
+        .order_by(Collection.created_at.desc())
+    )
+    return [
+        SearchCollectionResult(
+            id=col.id,
+            name=col.name,
+            description=col.description,
+            document_count=doc_count,
+            created_at=col.created_at,
+        )
+        for col, doc_count in result.all()
+    ]
