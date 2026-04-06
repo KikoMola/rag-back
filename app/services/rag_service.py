@@ -1,9 +1,11 @@
 import logging
+import re
 from collections.abc import AsyncGenerator
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import async_session
 from app.models.document import Document
 from app.services import ollama_service
@@ -116,6 +118,93 @@ async def ingest_document(document_id: int) -> None:
             logger.exception("Error indexing document %s", doc.filename)
 
 
+# ─── HELPERS ─────────────────────────────────────────────────────────
+
+# Stop words comunes en español (preguntas, artículos, preposiciones, verbos auxiliares)
+_STOP_WORDS = frozenset({
+    "me", "puedes", "puede", "podrias", "podrías", "explicar", "explicame",
+    "explícame", "hacer", "hazme", "dame", "dar", "decir", "dime",
+    "de", "la", "el", "las", "los", "un", "una", "unos", "unas",
+    "en", "con", "por", "para", "del", "al", "que", "qué",
+    "como", "cómo", "es", "son", "fue", "ser", "estar",
+    "muy", "más", "mas", "menos", "ya", "si", "sí", "no",
+    "y", "o", "a", "e", "u", "pero", "ni", "sin",
+    "su", "sus", "mi", "mis", "tu", "tus",
+    "este", "esta", "estos", "estas", "ese", "esa",
+    "lo", "le", "les", "se", "nos", "os",
+    "hay", "ha", "han", "he", "has",
+    "sobre", "entre", "desde", "hasta", "tras",
+    "manera", "forma", "detalladamente", "detallada", "detalle",
+    "breve", "brevemente", "resumida", "resumen", "resumidamente",
+    "favor", "gracias", "hola", "bien",
+})
+
+
+def _extract_key_phrases(question: str) -> list[str]:
+    """
+    Extrae frases clave de la pregunta del usuario para búsqueda keyword.
+
+    Estrategia:
+    1. Texto entrecomillado (prioridad máxima, el usuario lo destaca explícitamente)
+    2. Bigramas de palabras significativas (elimina stop words)
+    3. Palabras individuales largas (>5 chars) como fallback
+    """
+    phrases: list[str] = []
+
+    # 1. Entrecomillado explícito: "...", '...', «...», "..."
+    quoted = re.findall(r'["\u201c\u00ab\'](.*?)["\u201d\u00bb\']', question)
+    phrases.extend(q.strip() for q in quoted if len(q.strip()) > 2)
+
+    # 2. Bigramas de palabras significativas
+    words = re.findall(r"\w+", question.lower())
+    content_words = [w for w in words if w not in _STOP_WORDS and len(w) > 2]
+
+    for i in range(len(content_words) - 1):
+        bigram = f"{content_words[i]} {content_words[i + 1]}"
+        if bigram.lower() not in [p.lower() for p in phrases]:
+            phrases.append(bigram)
+
+    # 3. Palabras individuales largas como último recurso
+    for w in content_words:
+        if len(w) > 5 and w not in [p.lower() for p in phrases]:
+            phrases.append(w)
+
+    return phrases
+
+
+async def _detect_mentioned_filename(
+    question: str,
+    collection_ids: list[int],
+) -> str | None:
+    """
+    Revisa si la pregunta del usuario menciona literalmente alguno de los
+    nombres de archivo indexados en las colecciones indicadas.
+    Devuelve el filename tal cual está en la BD (y en los metadatos de ChromaDB)
+    o None si no detecta ninguno.
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(Document.filename).where(
+                Document.collection_id.in_(collection_ids),
+                Document.status == "indexed",
+            )
+        )
+        filenames = [row[0] for row in result.all()]
+
+    # Ordenar de más largo a más corto para evitar matches parciales
+    filenames.sort(key=len, reverse=True)
+
+    question_lower = question.lower()
+    for fname in filenames:
+        # Buscar el nombre con o sin extensión
+        name_lower = fname.lower()
+        name_no_ext = name_lower.rsplit(".", 1)[0] if "." in name_lower else name_lower
+        if name_lower in question_lower or name_no_ext in question_lower:
+            return fname
+
+    return None
+
+
 # ─── QUERY ───────────────────────────────────────────────────────────
 
 async def query_knowledge(
@@ -124,11 +213,14 @@ async def query_knowledge(
     top_k: int = 5,
 ) -> AsyncGenerator[StreamToken, None]:
     """
-    Pipeline de consulta RAG:
+    Pipeline de consulta RAG con búsqueda híbrida (semántica + keyword):
     1. Convertir la pregunta en un embedding
-    2. Buscar chunks similares en ChromaDB
-    3. Construir el prompt con el contexto recuperado
-    4. Hacer streaming de la respuesta del LLM
+    2. Determinar colecciones objetivo
+    3. Detectar filtros (filename mencionado, frases clave)
+    4. Búsqueda semántica (embedding similarity)
+    5. Búsqueda keyword ($contains en texto de chunks)
+    6. Fusionar y deduplicar resultados
+    7. Construir prompt con contexto y hacer streaming
     """
     # 1. Embedding de la pregunta
     query_embedding = (await ollama_service.generate_embeddings([question]))[0]
@@ -140,8 +232,19 @@ async def query_knowledge(
             result = await session.execute(select(Collection.id))
             collection_ids = [row[0] for row in result.all()]
 
-    # 3. Buscar en cada colección y agregar resultados
+    # 3. Detectar filtros
+    mentioned_filename = await _detect_mentioned_filename(question, collection_ids)
+    where_filter: dict | None = None
+    if mentioned_filename:
+        where_filter = {"filename": mentioned_filename}
+
+    key_phrases = _extract_key_phrases(question)
+
+    # 4. Búsqueda semántica (over-fetch ×3)
+    fetch_k = top_k * 3
+    seen_texts: set[str] = set()
     all_chunks: list[dict] = []
+
     for col_id in collection_ids:
         collection_name = _chroma_collection_name(col_id)
         if not chroma_client.collection_exists(collection_name):
@@ -149,22 +252,71 @@ async def query_knowledge(
         results = chroma_client.query_collection(
             collection_name=collection_name,
             query_embedding=query_embedding,
-            n_results=top_k,
+            n_results=fetch_k,
+            where=where_filter,
         )
-        documents = results.get("documents", [[]])[0]
-        metadatas = results.get("metadatas", [[]])[0]
-        distances = results.get("distances", [[]])[0]
+        for doc_text, meta, dist in zip(
+            results.get("documents", [[]])[0],
+            results.get("metadatas", [[]])[0],
+            results.get("distances", [[]])[0],
+        ):
+            text_key = doc_text[:200]
+            if text_key not in seen_texts:
+                seen_texts.add(text_key)
+                all_chunks.append({
+                    "text": doc_text,
+                    "filename": meta.get("filename", "desconocido"),
+                    "distance": dist,
+                    "keyword_match": False,
+                })
 
-        for doc_text, meta, dist in zip(documents, metadatas, distances):
-            all_chunks.append({
-                "text": doc_text,
-                "filename": meta.get("filename", "desconocido"),
-                "distance": dist,
-            })
+    # 5. Búsqueda keyword: para cada frase clave, buscar chunks que
+    #    contengan ese texto literal (complementa la búsqueda semántica)
+    for phrase in key_phrases:
+        for col_id in collection_ids:
+            collection_name = _chroma_collection_name(col_id)
+            if not chroma_client.collection_exists(collection_name):
+                continue
+            try:
+                kw_results = chroma_client.query_collection(
+                    collection_name=collection_name,
+                    query_embedding=query_embedding,
+                    n_results=top_k,
+                    where=where_filter,
+                    where_document={"$contains": phrase},
+                )
+                for doc_text, meta, dist in zip(
+                    kw_results.get("documents", [[]])[0],
+                    kw_results.get("metadatas", [[]])[0],
+                    kw_results.get("distances", [[]])[0],
+                ):
+                    text_key = doc_text[:200]
+                    if text_key not in seen_texts:
+                        seen_texts.add(text_key)
+                        all_chunks.append({
+                            "text": doc_text,
+                            "filename": meta.get("filename", "desconocido"),
+                            "distance": dist,
+                            "keyword_match": True,
+                        })
+            except Exception:
+                # $contains puede fallar si la frase no existe; ignorar
+                continue
 
-    # 4. Ordenar por relevancia (menor distancia = más parecido)
-    all_chunks.sort(key=lambda c: c["distance"])
+    # 6. Ordenar: priorizar keyword matches, luego por distancia
+    max_distance = settings.rag_max_distance
+    all_chunks = [c for c in all_chunks if c["distance"] <= max_distance]
+    all_chunks.sort(key=lambda c: (not c["keyword_match"], c["distance"]))
     top_chunks = all_chunks[:top_k]
+
+    logger.info(
+        "RAG hybrid retrieval: query=%r | semantic=%d | total=%d | top_k=%d | sources=%s",
+        question[:80],
+        sum(1 for c in all_chunks if not c["keyword_match"]),
+        len(all_chunks),
+        len(top_chunks),
+        {c["filename"] for c in top_chunks},
+    )
 
     if not top_chunks:
         yield StreamToken(type="content", token=(
@@ -173,7 +325,7 @@ async def query_knowledge(
         ))
         return
 
-    # 5. Construir el contexto para el prompt
+    # 7. Construir el contexto para el prompt
     context_parts = []
     for i, chunk in enumerate(top_chunks, 1):
         context_parts.append(
@@ -181,7 +333,7 @@ async def query_knowledge(
         )
     context = "\n\n---\n\n".join(context_parts)
 
-    # 6. Construir mensajes para el LLM
+    # 8. Construir mensajes para el LLM
     messages = [
         {"role": "system", "content": RAG_SYSTEM_PROMPT},
         {
@@ -194,7 +346,7 @@ async def query_knowledge(
         },
     ]
 
-    # 7. Stream de la respuesta
+    # 9. Stream de la respuesta
     async for stream_token in ollama_service.chat_stream(messages):
         yield stream_token
 

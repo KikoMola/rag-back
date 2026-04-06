@@ -18,7 +18,8 @@ class Settings(BaseSettings):
     # --- RAG ---
     chunk_size: int = 200
     chunk_overlap: int = 20
-    rag_top_k: int = 5
+    rag_top_k: int = 10
+    rag_max_distance: float = 1.2
 
     # --- CORS ---
     cors_origins: list[str] = [
