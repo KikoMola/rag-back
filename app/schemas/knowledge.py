@@ -45,4 +45,4 @@ class DocumentStatusResponse(BaseModel):
 class KnowledgeQuery(BaseModel):
     question: str
     collection_ids: list[int] | None = None
-    top_k: int = 5
+    top_k: int = 10

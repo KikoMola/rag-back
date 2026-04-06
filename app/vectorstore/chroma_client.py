@@ -42,14 +42,21 @@ def query_collection(
     collection_name: str,
     query_embedding: list[float],
     n_results: int = 5,
+    where: dict | None = None,
+    where_document: dict | None = None,
 ) -> dict:
     """Buscar los n documentos más similares a un embedding."""
     collection = get_or_create_collection(collection_name)
-    return collection.query(
-        query_embeddings=[query_embedding],
-        n_results=n_results,
-        include=["documents", "metadatas", "distances"],
-    )
+    kwargs: dict = {
+        "query_embeddings": [query_embedding],
+        "n_results": n_results,
+        "include": ["documents", "metadatas", "distances"],
+    }
+    if where:
+        kwargs["where"] = where
+    if where_document:
+        kwargs["where_document"] = where_document
+    return collection.query(**kwargs)
 
 
 def delete_documents_by_source(collection_name: str, source_id: str) -> None:
