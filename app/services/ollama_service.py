@@ -100,3 +100,25 @@ async def check_ollama_status() -> dict:
             return {"status": "ok", "models": model_names}
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
+
+
+async def generate_title(first_user_message: str) -> str:
+    """Genera un título corto (≤6 palabras) para una conversación."""
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Genera un título muy corto (máximo 6 palabras) para una conversación "
+                "que empieza con el siguiente mensaje del usuario. "
+                "Responde SOLO con el título, sin comillas ni explicaciones adicionales."
+            ),
+        },
+        {"role": "user", "content": first_user_message[:500]},
+    ]
+    try:
+        title = await chat_complete(messages)
+        title = title.strip().split("\n")[0][:100]
+        return title or "Nueva conversación"
+    except Exception:
+        return "Nueva conversación"
+

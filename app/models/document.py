@@ -10,6 +10,8 @@ class Collection(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Cache de preguntas sugeridas (JSON array de strings)
+    suggested_questions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     documents: Mapped[list["Document"]] = relationship(
@@ -31,6 +33,8 @@ class Document(Base):
     chunk_count: Mapped[int] = mapped_column(default=0)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Resumen generado automáticamente por el LLM tras la ingesta
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     collection: Mapped["Collection"] = relationship(back_populates="documents")

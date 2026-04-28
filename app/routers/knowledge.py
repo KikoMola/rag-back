@@ -3,7 +3,7 @@ import json
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -15,9 +15,11 @@ from app.models.document import Collection, Document
 from app.schemas.knowledge import (
     CollectionCreate,
     CollectionResponse,
+    CompareDocumentsRequest,
     DocumentResponse,
     DocumentStatusResponse,
     KnowledgeQuery,
+    SuggestedQuestionsResponse,
 )
 from app.services import rag_service
 from app.services.document_processor import get_format_from_filename
@@ -28,7 +30,6 @@ router = APIRouter()
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".epub", ".html", ".htm", ".txt", ".md"}
 
 
-# ─── Colecciones ─────────────────────────────────────────────────────
 
 @router.post("/collections", response_model=CollectionResponse, status_code=201)
 async def create_collection(
@@ -229,8 +230,92 @@ async def query_knowledge(collection_id: int, body: KnowledgeQuery):
                 collection_ids=[collection_id],
                 top_k=body.top_k,
             ):
-                event_type = "thinking" if stream_token["type"] == "thinking" else "token"
-                yield {"event": event_type, "data": json.dumps({"token": stream_token["token"]})}
+                if stream_token["type"] == "thinking":
+                    yield {"event": "thinking", "data": json.dumps({"token": stream_token["token"]})}
+                elif stream_token["type"] == "sources":
+                    yield {"event": "sources", "data": stream_token["token"]}
+                else:
+                    yield {"event": "token", "data": json.dumps({"token": stream_token["token"]})}
+            yield {"event": "done", "data": json.dumps({"status": "complete"})}
+        except Exception as exc:
+            yield {"event": "error", "data": json.dumps({"error": str(exc)})}
+
+    return EventSourceResponse(event_generator())
+
+
+# ─── Sugerencias de preguntas ─────────────────────────────────────────
+
+@router.get(
+    "/collections/{collection_id}/suggested-questions",
+    response_model=SuggestedQuestionsResponse,
+)
+async def suggested_questions(
+    collection_id: int,
+    refresh: bool = Query(False),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Devuelve 5 preguntas sugeridas sobre los documentos de la colección.
+    Se cachean en BD; usar ?refresh=true para regenerar.
+    """
+    result = await session.execute(
+        select(Collection).where(Collection.id == collection_id)
+    )
+    collection = result.scalar_one_or_none()
+    if not collection:
+        raise HTTPException(status_code=404, detail="Colección no encontrada")
+
+    if collection.suggested_questions_json and not refresh:
+        questions = json.loads(collection.suggested_questions_json)
+        return SuggestedQuestionsResponse(
+            collection_id=collection_id, questions=questions, cached=True
+        )
+
+    questions = await rag_service.generate_suggested_questions([collection_id])
+    collection.suggested_questions_json = json.dumps(questions)
+    await session.commit()
+
+    return SuggestedQuestionsResponse(
+        collection_id=collection_id, questions=questions, cached=False
+    )
+
+
+# ─── Comparación de documentos ────────────────────────────────────────
+
+@router.post("/documents/compare")
+async def compare_documents(
+    body: CompareDocumentsRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Compara dos documentos usando el LLM (SSE streaming)."""
+    # Verificar que ambos documentos existen y obtener sus collection_ids
+    res_a = await session.execute(
+        select(Document).where(Document.id == body.document_id_a)
+    )
+    res_b = await session.execute(
+        select(Document).where(Document.id == body.document_id_b)
+    )
+    doc_a = res_a.scalar_one_or_none()
+    doc_b = res_b.scalar_one_or_none()
+
+    if not doc_a:
+        raise HTTPException(status_code=404, detail=f"Documento {body.document_id_a} no encontrado")
+    if not doc_b:
+        raise HTTPException(status_code=404, detail=f"Documento {body.document_id_b} no encontrado")
+
+    async def event_generator():
+        try:
+            async for stream_token in rag_service.compare_documents(
+                doc_id_a=doc_a.id,
+                collection_id_a=doc_a.collection_id,
+                doc_id_b=doc_b.id,
+                collection_id_b=doc_b.collection_id,
+                question=body.question,
+            ):
+                if stream_token["type"] == "thinking":
+                    yield {"event": "thinking", "data": json.dumps({"token": stream_token["token"]})}
+                else:
+                    yield {"event": "token", "data": json.dumps({"token": stream_token["token"]})}
             yield {"event": "done", "data": json.dumps({"status": "complete"})}
         except Exception as exc:
             yield {"event": "error", "data": json.dumps({"error": str(exc)})}

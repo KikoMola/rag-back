@@ -82,3 +82,10 @@ def collection_exists(name: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def get_sample(collection_name: str, n: int = 5) -> dict:
+    """Obtener una muestra de documentos de una colección (sin query)."""
+    collection = get_or_create_collection(collection_name)
+    result = collection.get(limit=n, include=["documents", "metadatas"])
+    return result
