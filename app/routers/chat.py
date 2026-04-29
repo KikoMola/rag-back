@@ -153,7 +153,7 @@ async def send_message(
             for msg in conversation.messages
         ]
         return EventSourceResponse(_rag_generator(
-            conversation_id, body.content, collection_ids, history
+            conversation_id, body.content, collection_ids, history, model=body.model
         ))
     else:
         # Modo general: chat directo con Ollama
@@ -167,14 +167,14 @@ async def send_message(
         for msg in conversation.messages:
             ollama_messages.append({"role": msg.role, "content": msg.content})
         ollama_messages.append({"role": "user", "content": body.content})
-        return EventSourceResponse(_general_generator(conversation_id, ollama_messages))
+        return EventSourceResponse(_general_generator(conversation_id, ollama_messages, model=body.model))
 
 
-async def _general_generator(conversation_id: int, ollama_messages: list[dict]):
+async def _general_generator(conversation_id: int, ollama_messages: list[dict], model: str | None = None):
     """SSE generator para modo general."""
     full_response = ""
     try:
-        async for stream_token in ollama_service.chat_stream(ollama_messages):
+        async for stream_token in ollama_service.chat_stream(ollama_messages, model=model):
             if stream_token["type"] == "thinking":
                 yield {"event": "thinking", "data": json.dumps({"token": stream_token["token"]})}
             else:
@@ -202,6 +202,7 @@ async def _rag_generator(
     question: str,
     collection_ids: list[int] | None,
     history: list[dict],
+    model: str | None = None,
 ):
     """SSE generator para modo RAG."""
     full_response = ""
@@ -211,6 +212,7 @@ async def _rag_generator(
             collection_ids=collection_ids,
             top_k=settings.rag_top_k,
             history=history,
+            model=model,
         ):
             if stream_token["type"] == "thinking":
                 yield {"event": "thinking", "data": json.dumps({"token": stream_token["token"]})}

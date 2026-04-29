@@ -5,6 +5,7 @@ import json
 
 class MessageCreate(BaseModel):
     content: str
+    model: str | None = None  # None → usa el modelo por defecto del settings
 
 
 class MessageResponse(BaseModel):

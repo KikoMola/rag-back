@@ -222,6 +222,7 @@ async def query_knowledge(
     collection_ids: list[int] | None = None,
     top_k: int = 5,
     history: list[dict] | None = None,
+    model: str | None = None,
 ) -> AsyncGenerator[StreamToken, None]:
     """
     Pipeline de consulta RAG con búsqueda híbrida (semántica + keyword):
@@ -373,7 +374,7 @@ async def query_knowledge(
     )
 
     # 10. Stream de la respuesta
-    async for stream_token in ollama_service.chat_stream(messages):
+    async for stream_token in ollama_service.chat_stream(messages, model=model):
         yield stream_token
 
 
