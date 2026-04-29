@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 from collections.abc import AsyncGenerator
@@ -46,7 +47,8 @@ async def ingest_document(document_id: int) -> None:
     3. Dividir en chunks con solapamiento
     4. Generar embeddings via Ollama
     5. Almacenar en ChromaDB con metadata
-    6. Actualizar estado en BD
+    6. Generar resumen automático (primeros N chunks)
+    7. Actualizar estado en BD
     """
     async with async_session() as session:
         result = await session.execute(
@@ -110,6 +112,14 @@ async def ingest_document(document_id: int) -> None:
                 "Document %s indexed: %d chunks in collection %s",
                 doc.filename, len(chunks), collection_name,
             )
+
+            # 6. Generar resumen en background (no bloqueante para el estado indexed)
+            try:
+                summary = await generate_document_summary(chunks[:3], doc.filename)
+                doc.summary = summary
+                await session.commit()
+            except Exception as exc:
+                logger.warning("Could not generate summary for %s: %s", doc.filename, exc)
 
         except Exception as exc:
             doc.status = "error"
@@ -211,6 +221,8 @@ async def query_knowledge(
     question: str,
     collection_ids: list[int] | None = None,
     top_k: int = 5,
+    history: list[dict] | None = None,
+    model: str | None = None,
 ) -> AsyncGenerator[StreamToken, None]:
     """
     Pipeline de consulta RAG con búsqueda híbrida (semántica + keyword):
@@ -266,6 +278,7 @@ async def query_knowledge(
                 all_chunks.append({
                     "text": doc_text,
                     "filename": meta.get("filename", "desconocido"),
+                    "chunk_index": meta.get("chunk_index", 0),
                     "distance": dist,
                     "keyword_match": False,
                 })
@@ -296,6 +309,7 @@ async def query_knowledge(
                         all_chunks.append({
                             "text": doc_text,
                             "filename": meta.get("filename", "desconocido"),
+                            "chunk_index": meta.get("chunk_index", 0),
                             "distance": dist,
                             "keyword_match": True,
                         })
@@ -325,7 +339,18 @@ async def query_knowledge(
         ))
         return
 
-    # 7. Construir el contexto para el prompt
+    # 7. Emitir fuentes antes de la respuesta
+    sources_data = [
+        {
+            "filename": chunk["filename"],
+            "chunk_index": chunk.get("chunk_index", 0),
+            "excerpt": chunk["text"][:200],
+        }
+        for chunk in top_chunks
+    ]
+    yield StreamToken(type="sources", token=json.dumps(sources_data))
+
+    # 8. Construir el contexto para el prompt
     context_parts = []
     for i, chunk in enumerate(top_chunks, 1):
         context_parts.append(
@@ -333,9 +358,11 @@ async def query_knowledge(
         )
     context = "\n\n---\n\n".join(context_parts)
 
-    # 8. Construir mensajes para el LLM
-    messages = [
-        {"role": "system", "content": RAG_SYSTEM_PROMPT},
+    # 9. Construir mensajes para el LLM (con historial si se pasa)
+    messages = [{"role": "system", "content": RAG_SYSTEM_PROMPT}]
+    if history:
+        messages.extend(history)
+    messages.append(
         {
             "role": "user",
             "content": (
@@ -343,11 +370,11 @@ async def query_knowledge(
                 f"---\n\n"
                 f"PREGUNTA: {question}"
             ),
-        },
-    ]
+        }
+    )
 
-    # 9. Stream de la respuesta
-    async for stream_token in ollama_service.chat_stream(messages):
+    # 10. Stream de la respuesta
+    async for stream_token in ollama_service.chat_stream(messages, model=model):
         yield stream_token
 
 
@@ -357,3 +384,147 @@ def remove_document_from_index(document_id: int, collection_id: int) -> None:
     """Eliminar todos los chunks de un documento de ChromaDB."""
     collection_name = _chroma_collection_name(collection_id)
     chroma_client.delete_documents_by_source(collection_name, str(document_id))
+
+
+# ─── RESUMEN AUTOMÁTICO ───────────────────────────────────────────────
+
+async def generate_document_summary(chunks: list[str], filename: str) -> str:
+    """Genera un resumen breve (2-3 frases) de los primeros chunks de un documento."""
+    sample = "\n\n".join(chunks[:3])
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Eres un asistente que genera resúmenes concisos. "
+                "Genera un resumen de 2-3 frases del siguiente fragmento de texto. "
+                "Responde SOLO con el resumen, en español, sin introducción."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"Documento: {filename}\n\nContenido:\n{sample[:2000]}",
+        },
+    ]
+    summary = await ollama_service.chat_complete(messages)
+    return summary.strip()[:1000]
+
+
+# ─── SUGERENCIAS DE PREGUNTAS ────────────────────────────────────────
+
+async def generate_suggested_questions(collection_ids: list[int]) -> list[str]:
+    """
+    Genera 5 preguntas sugeridas a partir de una muestra de chunks
+    de las colecciones indicadas.
+    """
+    sample_texts: list[str] = []
+    for col_id in collection_ids:
+        collection_name = _chroma_collection_name(col_id)
+        if not chroma_client.collection_exists(collection_name):
+            continue
+        result = chroma_client.get_sample(collection_name, n=3)
+        docs = result.get("documents") or []
+        sample_texts.extend(docs[:3])
+        if len(sample_texts) >= 5:
+            break
+
+    if not sample_texts:
+        return []
+
+    context = "\n\n---\n\n".join(sample_texts[:5])
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Eres un asistente que genera preguntas de estudio. "
+                "Basándote en el material proporcionado, genera exactamente 5 preguntas "
+                "que un estudiante podría hacer. "
+                "Responde SOLO con las 5 preguntas, una por línea, numeradas del 1 al 5."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"Material:\n{context[:3000]}\n\nGenera 5 preguntas sobre este material.",
+        },
+    ]
+    response = await ollama_service.chat_complete(messages)
+    lines = [line.strip() for line in response.split("\n") if line.strip()]
+    questions: list[str] = []
+    for line in lines:
+        clean = re.sub(r"^\d+[.):\-]\s*", "", line)
+        if clean:
+            questions.append(clean)
+    return questions[:5]
+
+
+# ─── COMPARACIÓN DE DOCUMENTOS ───────────────────────────────────────
+
+async def compare_documents(
+    doc_id_a: int,
+    collection_id_a: int,
+    doc_id_b: int,
+    collection_id_b: int,
+    question: str | None = None,
+) -> AsyncGenerator[StreamToken, None]:
+    """
+    Obtiene chunks representativos de dos documentos y pide al LLM
+    que los compare/contraste.
+    """
+    chunks_a: list[str] = []
+    chunks_b: list[str] = []
+
+    col_name_a = _chroma_collection_name(collection_id_a)
+    col_name_b = _chroma_collection_name(collection_id_b)
+
+    if chroma_client.collection_exists(col_name_a):
+        res = chroma_client.get_sample(col_name_a, n=5)
+        docs = res.get("documents") or []
+        metas = res.get("metadatas") or []
+        for doc_text, meta in zip(docs, metas):
+            if str(meta.get("source_id")) == str(doc_id_a):
+                chunks_a.append(doc_text)
+
+    if chroma_client.collection_exists(col_name_b):
+        res = chroma_client.get_sample(col_name_b, n=5)
+        docs = res.get("documents") or []
+        metas = res.get("metadatas") or []
+        for doc_text, meta in zip(docs, metas):
+            if str(meta.get("source_id")) == str(doc_id_b):
+                chunks_b.append(doc_text)
+
+    async with async_session() as session:
+        res_a = await session.execute(select(Document).where(Document.id == doc_id_a))
+        res_b = await session.execute(select(Document).where(Document.id == doc_id_b))
+        doc_a = res_a.scalar_one_or_none()
+        doc_b = res_b.scalar_one_or_none()
+
+    name_a = doc_a.filename if doc_a else f"Documento {doc_id_a}"
+    name_b = doc_b.filename if doc_b else f"Documento {doc_id_b}"
+
+    context_a = "\n".join(chunks_a[:3])[:2000] if chunks_a else "(sin contenido disponible)"
+    context_b = "\n".join(chunks_b[:3])[:2000] if chunks_b else "(sin contenido disponible)"
+
+    compare_question = question or "Compara y contrasta el contenido de ambos documentos."
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Eres C.O.R.E., experto en análisis comparativo de documentos. "
+                "Compara los dos documentos de forma estructurada: "
+                "similitudes, diferencias y conclusión. Responde en español."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"DOCUMENTO A — {name_a}:\n{context_a}\n\n"
+                f"---\n\n"
+                f"DOCUMENTO B — {name_b}:\n{context_b}\n\n"
+                f"---\n\n"
+                f"PREGUNTA: {compare_question}"
+            ),
+        },
+    ]
+
+    async for stream_token in ollama_service.chat_stream(messages):
+        yield stream_token

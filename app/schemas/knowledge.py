@@ -27,6 +27,7 @@ class DocumentResponse(BaseModel):
     chunk_count: int
     status: str
     error_message: str | None
+    summary: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -38,6 +39,7 @@ class DocumentStatusResponse(BaseModel):
     status: str
     chunk_count: int
     error_message: str | None
+    summary: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -46,3 +48,16 @@ class KnowledgeQuery(BaseModel):
     question: str
     collection_ids: list[int] | None = None
     top_k: int = 10
+
+
+class SuggestedQuestionsResponse(BaseModel):
+    collection_id: int
+    questions: list[str]
+    cached: bool = False
+
+
+class CompareDocumentsRequest(BaseModel):
+    document_id_a: int
+    document_id_b: int
+    question: str | None = None  # Pregunta de comparación opcional
+
