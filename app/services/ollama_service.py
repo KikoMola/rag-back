@@ -122,3 +122,31 @@ async def generate_title(first_user_message: str) -> str:
     except Exception:
         return "Nueva conversación"
 
+
+async def ocr_image(image_b64: str, model: str | None = None) -> str:
+    """Ejecuta OCR sobre una imagen en base64 usando un modelo multimodal.
+
+    Devuelve el texto extraído en formato Markdown.
+    """
+    model = model or settings.ocr_model
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "Extract all text from this image and return it formatted as clean Markdown. "
+                    "Preserve the document structure: headings, lists, tables, paragraphs. "
+                    "Do not add any commentary, preamble or explanation — output ONLY the Markdown text."
+                ),
+                "images": [image_b64],
+            }
+        ],
+        "stream": False,
+    }
+    async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=10.0)) as client:
+        response = await client.post(f"{OLLAMA_API}/api/chat", json=payload)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("message", {}).get("content", "")
+

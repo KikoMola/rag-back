@@ -45,6 +45,7 @@ pip install -r requirements.txt
 ollama pull mxbai-embed-large    # Embeddings (obligatorio)
 ollama pull gemma4:26b           # Chat con reasoning — 24 GB+ VRAM (recomendado)
 ollama pull qwen3.6:27b          # Modelo coding (código, programación) — 24 GB+ VRAM
+ollama pull deepseek-ocr         # OCR multimodal (imágenes y PDFs)
 # Alternativas más ligeras:
 # ollama pull gemma3:12b         # 12-16 GB VRAM
 # ollama pull gemma3:4b          # 8 GB VRAM
@@ -62,6 +63,7 @@ Crea un fichero `.env` en la raíz para sobreescribir valores por defecto:
 ```env
 CORE_OLLAMA_CHAT_MODEL=gemma4:26b    # Modelo de chat por defecto
 CORE_OLLAMA_EMBED_MODEL=mxbai-embed-large
+CORE_OCR_MODEL=deepseek-ocr          # Modelo OCR multimodal (default: deepseek-ocr)
 CORE_CHUNK_SIZE=200                  # Palabras por chunk (default: 200)
 CORE_CHUNK_OVERLAP=20                # Solapamiento entre chunks (default: 20)
 CORE_RAG_TOP_K=10                    # Chunks de contexto enviados al LLM (default: 10)
@@ -128,6 +130,15 @@ El sistema utiliza un pipeline de búsqueda **híbrida** (semántica + keyword) 
 | `/api/chat/conversations/{id}/forks` | `GET` | Listar bifurcaciones de una conversación |
 | `/api/chat/conversations/{id}/export?format=md\|pdf` | `GET` | Exportar conversación (Markdown o PDF) |
 
+**OCR (documentos escaneados)**
+
+| Endpoint | Método | Descripción |
+|----------|--------|-------------|
+| `/api/ocr/documents` | `GET` | Listar todos los documentos OCR |
+| `/api/ocr/documents` | `POST` | Subir imagen o PDF y lanzar OCR en background |
+| `/api/ocr/documents/{id}` | `GET` | Obtener documento OCR con contenido Markdown |
+| `/api/ocr/documents/{id}` | `DELETE` | Eliminar documento OCR y archivo original |
+
 **Tags (etiquetas)**
 
 | Endpoint | Método | Descripción |
@@ -171,18 +182,19 @@ PDF, DOCX, EPUB, HTML, TXT, Markdown
 - **Resumen de documentos** — Generado automáticamente tras la indexación
 - **Comparación de documentos** — Contrasta dos documentos vía SSE streaming
 - **Etiquetas** — Sistema de tags para organizar conversaciones y documentos
+- **OCR** — Extrae texto de imágenes y PDFs escaneados con `deepseek-ocr` y lo convierte a Markdown
 
 ### Stack tecnológico
 
 | Componente | Función |
 |-----------|-------|
 | **FastAPI** | API REST async |
-| **Ollama** | LLM local (Gemma4:26b · Qwen3.6:27b) + embeddings (mxbai-embed-large) |
+| **Ollama** | LLM local (Gemma4:26b · Qwen3.6:27b) + embeddings (mxbai-embed-large) + OCR (deepseek-ocr) |
 | **ChromaDB** | Base de datos vectorial (distancia coseno) |
-| **SQLite + SQLAlchemy** | Metadata async (conversaciones, documentos, colecciones, tags) |
+| **SQLite + SQLAlchemy** | Metadata async (conversaciones, documentos, colecciones, tags, OCR) |
 | **SSE (sse-starlette)** | Streaming de respuestas con thinking/sources/content |
 | **fpdf2** | Exportación de conversaciones a PDF |
-| **PyMuPDF** | Extracción de texto de PDF |
+| **PyMuPDF** | Extracción de texto de PDF + renderizado de páginas para OCR |
 | **python-docx** | Extracción de texto de DOCX |
 | **ebooklib** | Extracción de texto de EPUB |
 
@@ -222,6 +234,7 @@ pip install -r requirements.txt
 ollama pull mxbai-embed-large    # Embeddings (required)
 ollama pull gemma4:26b           # Chat with reasoning — 24 GB+ VRAM (recommended)
 ollama pull qwen3.6:27b          # Coding model (code & programming) — 24 GB+ VRAM
+ollama pull deepseek-ocr         # Multimodal OCR (images & PDFs)
 # Lighter alternatives:
 # ollama pull gemma3:12b         # 12-16 GB VRAM
 # ollama pull gemma3:4b          # 8 GB VRAM
@@ -305,6 +318,15 @@ The system uses a **hybrid** search pipeline (semantic + keyword) to maximize co
 | `/api/chat/conversations/{id}/forks` | `GET` | List forks of a conversation |
 | `/api/chat/conversations/{id}/export?format=md\|pdf` | `GET` | Export conversation (Markdown or PDF) |
 
+**OCR (scanned documents)**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/ocr/documents` | `GET` | List all OCR documents |
+| `/api/ocr/documents` | `POST` | Upload image or PDF and trigger OCR in background |
+| `/api/ocr/documents/{id}` | `GET` | Get OCR document with Markdown content |
+| `/api/ocr/documents/{id}` | `DELETE` | Delete OCR document and original file |
+
 **Tags**
 
 | Endpoint | Method | Description |
@@ -348,17 +370,18 @@ PDF, DOCX, EPUB, HTML, TXT, Markdown
 - **Document summaries** — Auto-generated after indexing
 - **Document comparison** — Compare two documents via SSE streaming
 - **Tags** — Label system for organizing conversations and documents
+- **OCR** — Extracts text from scanned images and PDFs with `deepseek-ocr` and converts it to Markdown
 
 ### Tech stack
 
 | Component | Role |
 |-----------|------|
 | **FastAPI** | Async REST API |
-| **Ollama** | Local LLM (Gemma4:26b · Qwen3.6:27b) + embeddings (mxbai-embed-large) |
+| **Ollama** | Local LLM (Gemma4:26b · Qwen3.6:27b) + embeddings (mxbai-embed-large) + OCR (deepseek-ocr) |
 | **ChromaDB** | Vector database (cosine distance) |
-| **SQLite + SQLAlchemy** | Async metadata (conversations, documents, collections, tags) |
+| **SQLite + SQLAlchemy** | Async metadata (conversations, documents, collections, tags, OCR) |
 | **SSE (sse-starlette)** | Response streaming with thinking/sources/content |
 | **fpdf2** | Conversation export to PDF |
-| **PyMuPDF** | PDF text extraction |
+| **PyMuPDF** | PDF text extraction + page rendering for OCR |
 | **python-docx** | DOCX text extraction |
 | **ebooklib** | EPUB text extraction |

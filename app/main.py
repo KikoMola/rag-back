@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 from app.database import engine
 from app.models.conversation import Base
 from app.models.document import Collection, Document  # noqa: F401
+from app.models.ocr import OcrDocument  # noqa: F401
 from app.models.tags import Tag, ConversationTag, DocumentTag  # noqa: F401
 from sqlalchemy import text
 
@@ -61,9 +62,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.routers import chat, dashboard, knowledge, tags  # noqa: E402
+from app.routers import chat, dashboard, knowledge, ocr, tags  # noqa: E402
 
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["Dashboard"])
 app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
 app.include_router(knowledge.router, prefix="/api/knowledge", tags=["Knowledge"])
 app.include_router(tags.router, prefix="/api/tags", tags=["Tags"])
+app.include_router(ocr.router, prefix="/api/ocr", tags=["OCR"])

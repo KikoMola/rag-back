@@ -9,11 +9,13 @@ class Settings(BaseSettings):
     db_path: Path = data_dir / "core.db"
     chroma_dir: Path = data_dir / "chroma"
     uploads_dir: Path = data_dir / "uploads"
+    ocr_uploads_dir: Path = data_dir / "ocr_uploads"
 
     # --- Ollama ---
     ollama_base_url: str = "http://localhost:11434"
     ollama_chat_model: str = "gemma4:26b"
     ollama_embed_model: str = "mxbai-embed-large"
+    ocr_model: str = "deepseek-ocr"
 
     # --- RAG ---
     chunk_size: int = 200
@@ -40,6 +42,7 @@ class Settings(BaseSettings):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.chroma_dir.mkdir(parents=True, exist_ok=True)
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
+        self.ocr_uploads_dir.mkdir(parents=True, exist_ok=True)
 
     model_config = {
         "env_prefix": "CORE_",
