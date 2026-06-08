@@ -13,6 +13,7 @@ class OcrDocumentResponse(BaseModel):
     status: str
     error_message: str | None
     markdown_content: str | None
+    thumbnail_b64: str | None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -26,6 +27,7 @@ class OcrDocumentListResponse(BaseModel):
     page_count: int
     status: str
     error_message: str | None
+    thumbnail_b64: str | None
     created_at: datetime
 
     model_config = {"from_attributes": True}

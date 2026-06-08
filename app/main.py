@@ -23,6 +23,9 @@ _MIGRATIONS: list[str] = [
     "ALTER TABLE conversations ADD COLUMN forked_at_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL",
     # documents
     "ALTER TABLE documents ADD COLUMN summary TEXT",
+    # ocr_documents
+    "ALTER TABLE ocr_documents ADD COLUMN thumbnail_b64 TEXT",
+
     # collections
     "ALTER TABLE collections ADD COLUMN suggested_questions_json TEXT",
 ]

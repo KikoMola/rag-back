@@ -124,10 +124,7 @@ async def generate_title(first_user_message: str) -> str:
 
 
 async def ocr_image(image_b64: str, model: str | None = None) -> str:
-    """Ejecuta OCR sobre una imagen en base64 usando un modelo multimodal.
-
-    Devuelve el texto extraído en formato Markdown.
-    """
+    """Ejecuta OCR sobre una imagen en base64 usando un modelo multimodal."""
     model = model or settings.ocr_model
     payload = {
         "model": model,
@@ -142,11 +139,52 @@ async def ocr_image(image_b64: str, model: str | None = None) -> str:
                 "images": [image_b64],
             }
         ],
-        "stream": False,
+        "stream": True,
     }
+    parts: list[str] = []
     async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=10.0)) as client:
-        response = await client.post(f"{OLLAMA_API}/api/chat", json=payload)
-        response.raise_for_status()
-        data = response.json()
-        return data.get("message", {}).get("content", "")
+        async with client.stream("POST", f"{OLLAMA_API}/api/chat", json=payload) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line:
+                    continue
+                chunk = json.loads(line)
+                parts.append(chunk.get("message", {}).get("content", ""))
+                if chunk.get("done"):
+                    break
+    return "".join(parts)
+
+
+def _strip_ocr_preamble(text: str) -> str:
+    """Elimina líneas de autopresentación que algunos modelos OCR añaden al inicio.
+
+    Si el strip vaciaría el resultado por completo, devuelve el texto original
+    para no perder contenido legítimo.
+    """
+    lines = text.splitlines()
+    skip_prefixes = (
+        "you are",
+        "i am",
+        "as an ocr",
+        "as a helpful",
+        "sure,",
+        "sure!",
+        "here is",
+        "here's",
+        "the following",
+        "below is",
+        "certainly,",
+        "certainly!",
+        "of course",
+    )
+    stripped = list(lines)
+    while stripped and stripped[0].strip().lower().startswith(skip_prefixes):
+        stripped.pop(0)
+    # Elimina líneas vacías iniciales resultantes
+    while stripped and not stripped[0].strip():
+        stripped.pop(0)
+
+    # Salvaguarda: si el strip se lleva todo, devolver el original sin tocar
+    result = "\n".join(stripped)
+    return result if result.strip() else text.strip()
 

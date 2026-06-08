@@ -1,7 +1,9 @@
+import base64
 import logging
 import shutil
 from pathlib import Path
 
+import fitz
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +17,27 @@ from app.services.ocr_service import ALLOWED_EXTENSIONS, run_ocr
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_THUMB_MAX_PX = 400
+
+
+def _make_thumbnail_b64(filepath: Path) -> str | None:
+    """Genera una miniatura JPEG (max 400px) y la devuelve como base64 data URL."""
+    try:
+        doc = fitz.open(str(filepath))
+        page = doc[0]
+        # Escalar para que el lado más largo sea _THUMB_MAX_PX
+        w, h = page.rect.width, page.rect.height
+        scale = _THUMB_MAX_PX / max(w, h)
+        mat = fitz.Matrix(scale, scale)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        doc.close()
+        jpeg_bytes = pix.tobytes("jpeg")
+        b64 = base64.b64encode(jpeg_bytes).decode("utf-8")
+        return f"data:image/jpeg;base64,{b64}"
+    except Exception:
+        logger.warning("Thumbnail generation failed for %s", filepath, exc_info=True)
+        return None
 
 
 async def _process_ocr(document_id: int) -> None:
@@ -57,9 +80,7 @@ async def upload_ocr_document(
 
     settings.ocr_uploads_dir.mkdir(parents=True, exist_ok=True)
 
-    # Guardamos el archivo sin comprimir
     dest = settings.ocr_uploads_dir / file.filename
-    # Evitar colisiones de nombre
     counter = 1
     stem = Path(file.filename).stem
     while dest.exists():
@@ -70,6 +91,7 @@ async def upload_ocr_document(
         shutil.copyfileobj(file.file, f)
 
     size_bytes = dest.stat().st_size
+    thumbnail_b64 = _make_thumbnail_b64(dest)
 
     doc = OcrDocument(
         filename=dest.name,
@@ -77,6 +99,7 @@ async def upload_ocr_document(
         format=suffix.lstrip("."),
         size_bytes=size_bytes,
         status="pending",
+        thumbnail_b64=thumbnail_b64,
     )
     session.add(doc)
     await session.commit()

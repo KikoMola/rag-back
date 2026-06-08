@@ -26,6 +26,7 @@ def _pdf_page_to_png_b64(page: fitz.Page, dpi: int = 200) -> str:
     return _image_bytes_to_b64(pix.tobytes("png"))
 
 
+
 async def run_ocr(filepath: Path, fmt: str, model: str | None = None) -> tuple[str, int]:
     """Ejecuta OCR sobre el archivo y devuelve (markdown_content, page_count).
 
