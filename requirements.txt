@@ -13,3 +13,6 @@ sse-starlette>=2.1.0
 pydantic-settings>=2.6.0
 python-dotenv>=1.0.0
 fpdf2>=2.7.0
+kokoro-onnx>=0.4.7
+lameenc>=1.8.0
+piper-tts>=1.8.0

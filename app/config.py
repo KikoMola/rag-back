@@ -10,6 +10,18 @@ class Settings(BaseSettings):
     chroma_dir: Path = data_dir / "chroma"
     uploads_dir: Path = data_dir / "uploads"
     ocr_uploads_dir: Path = data_dir / "ocr_uploads"
+    tts_audio_dir: Path = data_dir / "tts_audio"
+    tts_models_dir: Path = data_dir / "tts_models"
+
+    # --- TTS ---
+    tts_default_voice: str = "ef_dora"
+    tts_mp3_bitrate: int = 64
+    tts_max_chars: int = 600_000
+    tts_kokoro_base_url: str = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1"
+    tts_kokoro_model_file: str = "kokoro-v1.0.onnx"
+    tts_kokoro_voices_file: str = "voices-v1.0.bin"
+    tts_piper_base_url: str = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
+    tts_piper_voice: str = "es/es_ES/sharvard/medium/es_ES-sharvard-medium"
 
     # --- Ollama ---
     ollama_base_url: str = "http://localhost:11434"
@@ -43,6 +55,8 @@ class Settings(BaseSettings):
         self.chroma_dir.mkdir(parents=True, exist_ok=True)
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         self.ocr_uploads_dir.mkdir(parents=True, exist_ok=True)
+        self.tts_audio_dir.mkdir(parents=True, exist_ok=True)
+        self.tts_models_dir.mkdir(parents=True, exist_ok=True)
 
     model_config = {
         "env_prefix": "CORE_",

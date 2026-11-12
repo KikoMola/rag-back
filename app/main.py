@@ -12,6 +12,7 @@ from app.models.conversation import Base
 from app.models.document import Collection, Document  # noqa: F401
 from app.models.ocr import OcrDocument  # noqa: F401
 from app.models.tags import Tag, ConversationTag, DocumentTag  # noqa: F401
+from app.models.tts import TtsAudio  # noqa: F401
 from sqlalchemy import text
 
 
@@ -46,6 +47,14 @@ async def lifespan(application: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _run_migrations(conn)
+        # Los trabajos TTS viven en memoria: los que quedaron a medias no se reanudan
+        await conn.execute(
+            text(
+                "UPDATE tts_audios SET status = 'error', "
+                "error_message = 'La generación se interrumpió al reiniciar el servidor' "
+                "WHERE status IN ('pending', 'processing')"
+            )
+        )
     yield
     await engine.dispose()
 
@@ -65,10 +74,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.routers import chat, dashboard, knowledge, ocr, tags  # noqa: E402
+from app.routers import chat, dashboard, knowledge, ocr, tags, tts  # noqa: E402
 
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["Dashboard"])
 app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
 app.include_router(knowledge.router, prefix="/api/knowledge", tags=["Knowledge"])
 app.include_router(tags.router, prefix="/api/tags", tags=["Tags"])
 app.include_router(ocr.router, prefix="/api/ocr", tags=["OCR"])
+app.include_router(tts.router, prefix="/api/tts", tags=["TTS"])
