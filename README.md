@@ -68,6 +68,8 @@ CORE_CHUNK_SIZE=200                  # Palabras por chunk (default: 200)
 CORE_CHUNK_OVERLAP=20                # Solapamiento entre chunks (default: 20)
 CORE_RAG_TOP_K=10                    # Chunks de contexto enviados al LLM (default: 10)
 CORE_RAG_MAX_DISTANCE=1.2           # Umbral máximo de distancia coseno (default: 1.2)
+CORE_TTS_DEFAULT_VOICE=ef_dora       # Voz TTS por defecto (ef_dora, em_alex, em_santa...)
+CORE_TTS_MP3_BITRATE=64              # Bitrate del MP3 generado en kbps (default: 64)
 ```
 
 > El modelo se puede sobreescribir **por mensaje** enviando el campo `model` en el body. Ejemplo: `{ "content": "Escribe una función en Python...", "model": "qwen3.6:27b" }`.
@@ -139,6 +141,33 @@ El sistema utiliza un pipeline de búsqueda **híbrida** (semántica + keyword) 
 | `/api/ocr/documents/{id}` | `GET` | Obtener documento OCR con contenido Markdown |
 | `/api/ocr/documents/{id}` | `DELETE` | Eliminar documento OCR y archivo original |
 
+**TTS (texto a voz)**
+
+| Endpoint | Método | Descripción |
+|----------|--------|-------------|
+| `/api/tts/voices` | `GET` | Voces disponibles y voz por defecto |
+| `/api/tts/audios` | `GET` | Listar todos los audios |
+| `/api/tts/audios` | `POST` | Crear audio (multipart) y generar el MP3 en background |
+| `/api/tts/audios/{id}` | `GET` | Estado, progreso (0-100) y texto que se lee |
+| `/api/tts/audios/{id}/file` | `GET` | MP3 generado (admite `Range`; `?download=true` fuerza la descarga) |
+| `/api/tts/audios/{id}` | `DELETE` | Eliminar audio (cancela la generación si está en curso) |
+
+Campos de `POST /api/tts/audios` (exactamente un origen: `file`, `document_id` o `text`):
+
+| Campo | Descripción |
+|-------|-------------|
+| `file` | Archivo PDF, DOCX, EPUB, HTML, TXT o Markdown |
+| `document_id` | ID de un documento ya subido a una colección |
+| `text` | Texto libre |
+| `page_start`, `page_end` | Rango de páginas, ambos inclusive (solo PDF) |
+| `voice` | ID de voz (default: `CORE_TTS_DEFAULT_VOICE`) |
+| `speed` | Velocidad entre 0.5 y 2.0 (default: 1.0) |
+| `title` | Título del audio (default: nombre del archivo) |
+
+> **Motor TTS**: se usa **Kokoro-82M** sobre ONNX Runtime en CPU, así que no consume VRAM. Los modelos de voz de Ollama (`phonon`) todavía requieren MLX y solo funcionan en Mac con Apple Silicon. La primera vez se descargan automáticamente el modelo (~310 MB) y las voces (~27 MB) a `data/tts_models/`.
+>
+> El texto se lee de forma literal tras una limpieza: se eliminan cabeceras y pies repetidos, números de página, tablas, URLs y marcas de Markdown. Los PDFs escaneados no tienen texto: pásalos antes por OCR.
+
 **Tags (etiquetas)**
 
 | Endpoint | Método | Descripción |
@@ -183,6 +212,7 @@ PDF, DOCX, EPUB, HTML, TXT, Markdown
 - **Comparación de documentos** — Contrasta dos documentos vía SSE streaming
 - **Etiquetas** — Sistema de tags para organizar conversaciones y documentos
 - **OCR** — Extrae texto de imágenes y PDFs escaneados con `deepseek-ocr` y lo convierte a Markdown
+- **TTS** — Convierte un documento, un rango de páginas o un texto en un MP3 con Kokoro-82M (voces en español, inglés, francés, italiano y portugués)
 
 ### Stack tecnológico
 
@@ -197,6 +227,8 @@ PDF, DOCX, EPUB, HTML, TXT, Markdown
 | **PyMuPDF** | Extracción de texto de PDF + renderizado de páginas para OCR |
 | **python-docx** | Extracción de texto de DOCX |
 | **ebooklib** | Extracción de texto de EPUB |
+| **kokoro-onnx + ONNX Runtime** | Síntesis de voz (TTS) en CPU |
+| **lameenc** | Codificación de audio a MP3 |
 
 ---
 
@@ -256,6 +288,8 @@ CORE_CHUNK_SIZE=200                  # Words per chunk (default: 200)
 CORE_CHUNK_OVERLAP=20                # Overlap between chunks (default: 20)
 CORE_RAG_TOP_K=10                    # Context chunks sent to the LLM (default: 10)
 CORE_RAG_MAX_DISTANCE=1.2           # Max cosine distance threshold (default: 1.2)
+CORE_TTS_DEFAULT_VOICE=ef_dora       # Default TTS voice (ef_dora, em_alex, em_santa...)
+CORE_TTS_MP3_BITRATE=64              # Bitrate of the generated MP3 in kbps (default: 64)
 ```
 
 > The model can be overridden **per message** by sending the `model` field in the body. Example: `{ "content": "Write a Python function...", "model": "qwen3.6:27b" }`.
@@ -327,6 +361,33 @@ The system uses a **hybrid** search pipeline (semantic + keyword) to maximize co
 | `/api/ocr/documents/{id}` | `GET` | Get OCR document with Markdown content |
 | `/api/ocr/documents/{id}` | `DELETE` | Delete OCR document and original file |
 
+**TTS (text to speech)**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/tts/voices` | `GET` | Available voices and default voice |
+| `/api/tts/audios` | `GET` | List all audios |
+| `/api/tts/audios` | `POST` | Create audio (multipart) and generate the MP3 in background |
+| `/api/tts/audios/{id}` | `GET` | Status, progress (0-100) and the text being read |
+| `/api/tts/audios/{id}/file` | `GET` | Generated MP3 (supports `Range`; `?download=true` forces download) |
+| `/api/tts/audios/{id}` | `DELETE` | Delete audio (cancels generation if in progress) |
+
+Fields of `POST /api/tts/audios` (exactly one source: `file`, `document_id` or `text`):
+
+| Field | Description |
+|-------|-------------|
+| `file` | PDF, DOCX, EPUB, HTML, TXT or Markdown file |
+| `document_id` | ID of a document already uploaded to a collection |
+| `text` | Free text |
+| `page_start`, `page_end` | Page range, both inclusive (PDF only) |
+| `voice` | Voice ID (default: `CORE_TTS_DEFAULT_VOICE`) |
+| `speed` | Speed between 0.5 and 2.0 (default: 1.0) |
+| `title` | Audio title (default: file name) |
+
+> **TTS engine**: **Kokoro-82M** on ONNX Runtime (CPU), so it uses no VRAM. Ollama's speech models (`phonon`) still require MLX and only run on Apple Silicon Macs. On first use the model (~310 MB) and voices (~27 MB) are downloaded automatically to `data/tts_models/`.
+>
+> Text is read literally after a cleanup pass: repeated headers and footers, page numbers, tables, URLs and Markdown marks are removed. Scanned PDFs contain no text: run them through OCR first.
+
 **Tags**
 
 | Endpoint | Method | Description |
@@ -371,6 +432,7 @@ PDF, DOCX, EPUB, HTML, TXT, Markdown
 - **Document comparison** — Compare two documents via SSE streaming
 - **Tags** — Label system for organizing conversations and documents
 - **OCR** — Extracts text from scanned images and PDFs with `deepseek-ocr` and converts it to Markdown
+- **TTS** — Turns a document, a page range or a text into an MP3 with Kokoro-82M (Spanish, English, French, Italian and Portuguese voices)
 
 ### Tech stack
 
@@ -385,3 +447,5 @@ PDF, DOCX, EPUB, HTML, TXT, Markdown
 | **PyMuPDF** | PDF text extraction + page rendering for OCR |
 | **python-docx** | DOCX text extraction |
 | **ebooklib** | EPUB text extraction |
+| **kokoro-onnx + ONNX Runtime** | Speech synthesis (TTS) on CPU |
+| **lameenc** | MP3 audio encoding |
