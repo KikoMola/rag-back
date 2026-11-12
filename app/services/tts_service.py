@@ -1,11 +1,12 @@
 """Servicio de Text-to-Speech: convierte texto en un MP3.
 
-El motor actual es Kokoro-82M sobre ONNX Runtime (CPU), porque los modelos de
-voz de Ollama (Phonon) aún requieren MLX y no funcionan en Windows. El resto
-del servicio solo depende de la interfaz `TtsEngine`, así que añadir otro
-motor no afecta al pipeline.
+Hay dos motores, ambos sobre ONNX Runtime en CPU: Kokoro-82M (el más natural)
+y Piper (aporta voces en español de España). Los modelos de voz de Ollama
+(Phonon) aún requieren MLX y no funcionan en Windows. El pipeline solo depende
+de la interfaz `TtsEngine`; cada voz se dirige a su motor por el ID.
 """
 import asyncio
+import json
 import logging
 import re
 import threading
@@ -63,6 +64,23 @@ class TtsEngine(Protocol):
     def synthesize(self, unit: SpeechUnit, voice: str, speed: float) -> np.ndarray: ...
 
 
+def _download_model(url: str, filename: str) -> Path:
+    """Descarga un fichero de modelo a `tts_models_dir` si aún no está."""
+    dest = settings.tts_models_dir / filename
+    if dest.exists():
+        return dest
+    settings.tts_models_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Descargando modelo TTS %s", url)
+    partial = dest.with_suffix(dest.suffix + ".part")
+    with httpx.stream("GET", url, follow_redirects=True, timeout=600) as response:
+        response.raise_for_status()
+        with partial.open("wb") as f:
+            for chunk in response.iter_bytes(1 << 20):
+                f.write(chunk)
+    partial.replace(dest)
+    return dest
+
+
 # ─── Motor Kokoro (ONNX, CPU) ────────────────────────────────────────
 
 class KokoroEngine:
@@ -80,20 +98,7 @@ class KokoroEngine:
     # -- carga perezosa --
 
     def _download(self, filename: str) -> Path:
-        dest = settings.tts_models_dir / filename
-        if dest.exists():
-            return dest
-        settings.tts_models_dir.mkdir(parents=True, exist_ok=True)
-        url = f"{settings.tts_kokoro_base_url}/{filename}"
-        logger.info("Descargando modelo TTS %s", url)
-        partial = dest.with_suffix(dest.suffix + ".part")
-        with httpx.stream("GET", url, follow_redirects=True, timeout=600) as response:
-            response.raise_for_status()
-            with partial.open("wb") as f:
-                for chunk in response.iter_bytes(1 << 20):
-                    f.write(chunk)
-        partial.replace(dest)
-        return dest
+        return _download_model(f"{settings.tts_kokoro_base_url}/{filename}", filename)
 
     def _load_voices(self):
         with self._lock:
@@ -134,8 +139,7 @@ class KokoroEngine:
                     gender="female" if voice_id[1] == "f" else "male",
                 )
             )
-        # Español primero: es el caso de uso principal
-        return sorted(result, key=lambda v: (v.language != "Español", v.language, v.name))
+        return result
 
     def _check_voice(self, voice: str) -> str:
         if voice not in self._load_voices().files or voice[0] not in _KOKORO_LANGS:
@@ -229,16 +233,126 @@ def _trim_silence(audio: np.ndarray, sample_rate: int, threshold: float = 0.01) 
     return audio[max(loud[0] - margin, 0) : loud[-1] + margin]
 
 
-_engine: TtsEngine | None = None
+# ─── Motor Piper (ONNX, CPU) ─────────────────────────────────────────
+
+class PiperEngine:
+    """Voces de Piper. Menos naturales que Kokoro, pero con español de España."""
+
+    VOICE_PREFIX = "piper_"
+    _MAX_CHARS = 400  # texto por fragmento: da un progreso fluido y permite cancelar
+    _GENDERS = {"f": "female", "m": "male"}
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._voice = None
+        self._config: dict | None = None
+        # p. ej. "es/es_ES/sharvard/medium/es_ES-sharvard-medium" → "sharvard"
+        self._name = settings.tts_piper_voice.split("/")[2]
+
+    def _download(self, suffix: str) -> Path:
+        filename = settings.tts_piper_voice.rsplit("/", 1)[-1] + suffix
+        return _download_model(f"{settings.tts_piper_base_url}/{settings.tts_piper_voice}{suffix}", filename)
+
+    def _load_config(self) -> dict:
+        with self._lock:
+            if self._config is None:
+                self._config = json.loads(self._download(".onnx.json").read_text(encoding="utf-8"))
+            return self._config
+
+    def _load_model(self):
+        self._load_config()
+        with self._lock:
+            if self._voice is None:
+                from piper import PiperVoice
+
+                self._voice = PiperVoice.load(self._download(".onnx"), config_path=self._download(".onnx.json"))
+            return self._voice
+
+    @property
+    def sample_rate(self) -> int:
+        return int(self._load_config()["audio"]["sample_rate"])
+
+    def _speakers(self) -> dict[str, int | None]:
+        """ID de voz → speaker_id del modelo (None si el modelo tiene un solo hablante)."""
+        speaker_map = self._load_config().get("speaker_id_map") or {}
+        if not speaker_map:
+            return {f"{self.VOICE_PREFIX}{self._name}": None}
+        return {f"{self.VOICE_PREFIX}{self._name}_{key.lower()}": sid for key, sid in speaker_map.items()}
+
+    def voices(self) -> list[Voice]:
+        return [
+            Voice(
+                id=voice_id,
+                name=self._name.title(),
+                language="Español (España)",
+                gender=self._GENDERS.get(voice_id.rsplit("_", 1)[-1], "female"),
+            )
+            for voice_id in self._speakers()
+        ]
+
+    def plan(self, paragraphs: list[list[str]], voice: str) -> list[SpeechUnit]:
+        if voice not in self._speakers():
+            raise ValueError(f"Voz no disponible: {voice}")
+        self._load_model()
+        units: list[SpeechUnit] = []
+        for sentences in paragraphs:
+            batches: list[str] = []
+            current = ""
+            for sentence in sentences:
+                if current and len(current) + len(sentence) + 1 > self._MAX_CHARS:
+                    batches.append(current)
+                    current = sentence
+                else:
+                    current = f"{current} {sentence}".strip()
+            if current:
+                batches.append(current)
+            for index, batch in enumerate(batches):
+                last = index == len(batches) - 1
+                units.append(SpeechUnit(batch, _PAUSE_PARAGRAPH if last else _PAUSE_SENTENCE))
+        return units
+
+    def synthesize(self, unit: SpeechUnit, voice: str, speed: float) -> np.ndarray:
+        from piper import SynthesisConfig
+
+        model = self._load_model()
+        base_length = self._load_config().get("inference", {}).get("length_scale", 1.0)
+        config = SynthesisConfig(speaker_id=self._speakers()[voice], length_scale=base_length / speed)
+        # Piper devuelve un trozo por frase: se recorta cada uno y se unen con una pausa corta
+        gap = np.zeros(int(self.sample_rate * _PAUSE_SENTENCE), dtype=np.float32)
+        parts: list[np.ndarray] = []
+        for chunk in model.synthesize(unit.payload, syn_config=config):
+            audio = _trim_silence(np.asarray(chunk.audio_float_array, dtype=np.float32).reshape(-1), self.sample_rate)
+            if audio.size:
+                parts.extend([audio, gap])
+        return np.concatenate(parts[:-1]) if parts else np.zeros(0, dtype=np.float32)
 
 
-def get_engine() -> TtsEngine:
-    global _engine
-    if _engine is None:
-        if settings.tts_provider != "kokoro":
-            raise RuntimeError(f"Proveedor TTS no soportado: {settings.tts_provider}")
-        _engine = KokoroEngine()
-    return _engine
+_engines: dict[str, TtsEngine] = {}
+
+
+def _all_engines() -> list[TtsEngine]:
+    if not _engines:
+        _engines["kokoro"] = KokoroEngine()
+        _engines["piper"] = PiperEngine()
+    return list(_engines.values())
+
+
+def get_engine(voice: str) -> TtsEngine:
+    """Motor que sintetiza la voz indicada."""
+    _all_engines()
+    return _engines["piper" if voice.startswith(PiperEngine.VOICE_PREFIX) else "kokoro"]
+
+
+def _collect_voices() -> list[Voice]:
+    voices: list[Voice] = []
+    for engine in _all_engines():
+        try:
+            voices.extend(engine.voices())
+        except Exception:
+            # Un motor sin modelo descargable (p. ej. sin conexión) no debe ocultar al otro
+            logger.warning("No se pudieron cargar las voces de %s", type(engine).__name__, exc_info=True)
+    # Español primero: es el caso de uso principal
+    return sorted(voices, key=lambda v: (not v.language.startswith("Español"), v.language, v.name, v.gender))
 
 
 # ─── Generación del MP3 ──────────────────────────────────────────────
@@ -275,7 +389,7 @@ _job_lock = asyncio.Lock()
 
 
 async def list_voices() -> list[Voice]:
-    return await asyncio.to_thread(get_engine().voices)
+    return await asyncio.to_thread(_collect_voices)
 
 
 async def run_job(audio_id: int) -> None:
@@ -297,7 +411,7 @@ async def run_job(audio_id: int) -> None:
             audio.progress = 0
             await session.commit()
 
-            engine = get_engine()
+            engine = get_engine(audio.voice)
             paragraphs = split_paragraphs(audio.text_content)
             units = await asyncio.to_thread(engine.plan, paragraphs, audio.voice)
             if not units:

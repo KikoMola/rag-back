@@ -164,7 +164,7 @@ Campos de `POST /api/tts/audios` (exactamente un origen: `file`, `document_id` o
 | `speed` | Velocidad entre 0.5 y 2.0 (default: 1.0) |
 | `title` | Título del audio (default: nombre del archivo) |
 
-> **Motor TTS**: se usa **Kokoro-82M** sobre ONNX Runtime en CPU, así que no consume VRAM. Los modelos de voz de Ollama (`phonon`) todavía requieren MLX y solo funcionan en Mac con Apple Silicon. La primera vez se descargan automáticamente el modelo (~310 MB) y las voces (~27 MB) a `data/tts_models/`.
+> **Motores TTS**: hay dos, ambos sobre ONNX Runtime en CPU (no consumen VRAM). **Kokoro-82M** es el más natural (voces `ef_dora`, `em_alex`, `em_santa`...) y **Piper** aporta voces en español de España (`piper_sharvard_f`, `piper_sharvard_m`) y es más rápido. Los modelos de voz de Ollama (`phonon`) todavía requieren MLX y solo funcionan en Mac con Apple Silicon. La primera vez se descargan automáticamente los modelos (~310 MB + ~27 MB de Kokoro, ~75 MB de Piper) a `data/tts_models/`.
 >
 > El texto se lee de forma literal tras una limpieza: se eliminan cabeceras y pies repetidos, números de página, tablas, URLs y marcas de Markdown. Los PDFs escaneados no tienen texto: pásalos antes por OCR.
 
@@ -227,7 +227,7 @@ PDF, DOCX, EPUB, HTML, TXT, Markdown
 | **PyMuPDF** | Extracción de texto de PDF + renderizado de páginas para OCR |
 | **python-docx** | Extracción de texto de DOCX |
 | **ebooklib** | Extracción de texto de EPUB |
-| **kokoro-onnx + ONNX Runtime** | Síntesis de voz (TTS) en CPU |
+| **kokoro-onnx + piper-tts (ONNX Runtime)** | Síntesis de voz (TTS) en CPU |
 | **lameenc** | Codificación de audio a MP3 |
 
 ---
@@ -384,7 +384,7 @@ Fields of `POST /api/tts/audios` (exactly one source: `file`, `document_id` or `
 | `speed` | Speed between 0.5 and 2.0 (default: 1.0) |
 | `title` | Audio title (default: file name) |
 
-> **TTS engine**: **Kokoro-82M** on ONNX Runtime (CPU), so it uses no VRAM. Ollama's speech models (`phonon`) still require MLX and only run on Apple Silicon Macs. On first use the model (~310 MB) and voices (~27 MB) are downloaded automatically to `data/tts_models/`.
+> **TTS engines**: there are two, both on ONNX Runtime (CPU, no VRAM used). **Kokoro-82M** is the most natural (voices `ef_dora`, `em_alex`, `em_santa`...) and **Piper** adds Spain-Spanish voices (`piper_sharvard_f`, `piper_sharvard_m`) and is faster. Ollama's speech models (`phonon`) still require MLX and only run on Apple Silicon Macs. On first use the models (~310 MB + ~27 MB for Kokoro, ~75 MB for Piper) are downloaded automatically to `data/tts_models/`.
 >
 > Text is read literally after a cleanup pass: repeated headers and footers, page numbers, tables, URLs and Markdown marks are removed. Scanned PDFs contain no text: run them through OCR first.
 
@@ -447,5 +447,5 @@ PDF, DOCX, EPUB, HTML, TXT, Markdown
 | **PyMuPDF** | PDF text extraction + page rendering for OCR |
 | **python-docx** | DOCX text extraction |
 | **ebooklib** | EPUB text extraction |
-| **kokoro-onnx + ONNX Runtime** | Speech synthesis (TTS) on CPU |
+| **kokoro-onnx + piper-tts (ONNX Runtime)** | Speech synthesis (TTS) on CPU |
 | **lameenc** | MP3 audio encoding |
